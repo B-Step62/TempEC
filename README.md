@@ -5,6 +5,7 @@
 データセットの画像を読み込むためのクラスを記述。<br/>
 ー NETWORK.py<br/>
 それぞれのネットワーク構造を記述。<br/>
+<br/>
 ---以下はデータ収集用のコードなのでシステムを動かすのには無関係。<br/>
 ー labelling.py<br/>
 動画にアイコンタクトのGround Truthをつける。<br/>
@@ -33,7 +34,7 @@
 ー result.txt : 出力結果を分析したもの。具体的には識別ミスの数や、正解率・再現率・F値などがテキストでまとめられる。<br/>
 ー imgディレクトリ： 識別ミスした画像が保存される。False-NegativeがFNディレクトリに、False-PositiveがFPディレクトリに保存される。（ただし左目のみ）<br/>
 
-##○実行タイプ<br/>
+##実行タイプ<br/>
 ー train_cnn  : CNN(DEEPEC)の学習<br/>
 ー test_cnn  : CNN(DEEPEC)のテスト<br/>
 ー train_lstm  : LSTM(TempEC)の学習<br/>
