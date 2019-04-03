@@ -1,3 +1,8 @@
+# Requirement
+- keras 2.0.3
+- tensorflow 1.12.0
+- opencv2
+
 # コード概説
 ー main.py<br/>
 実行用コード。DEEPEC、TempEC、TempEC-HPの３種類のネットワークの学習・テストができます。<br/>
