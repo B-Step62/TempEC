@@ -1,11 +1,21 @@
 # -*- coding: utf-8 -*-
 
+
+import os
+import sys
+import glob
+import csv
+import random
+import time
+
+import cv2
 import numpy as np
-
-import os, sys, cv2, glob, csv, random
 import pandas as pd
-
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_curve, auc
+import matplotlib as mpl
+mpl.use('TkAgg')
+import matplotlib.pyplot as plt
 
 from keras import backend as K
 from keras.models import model_from_json, Model, Sequential
@@ -18,17 +28,10 @@ from keras.layers.merge import concatenate
 from keras.layers.recurrent import LSTM
 from keras.layers.wrappers import TimeDistributed
 from keras.preprocessing.image import ImageDataGenerator
-from keras_contrib.layers import CRF
-
+#from keras_contrib.layers import CRF
 from keras.utils import plot_model
 from keras.utils.vis_utils import model_to_dot
 
-import matplotlib.pyplot as plt 
-
-
-from sklearn.metrics import roc_curve, auc
-
-# 自作関数たち
 import NETWORK
 from data_utils import MyDatasetLoader
 
@@ -312,16 +315,22 @@ def make_model_crf():
 
 
 #テスト用にモデルと重さを読み込み
-def read_model(modelStr, epoch, cnn_or_lstm,test_name):
+def read_model(modelStr, epoch, cnn_or_lstm,test_name, freq=None):
     # モデル構成のファイル名
     json_name = 'architecture_%s.json' % modelStr
     # モデル重みのファイル名
     weight_name = 'model_weights_%s_%02d.h5'%(modelStr, epoch - 1)
 
     if cnn_or_lstm == 'cnn':
-        reading_path = 'cache/{0}/{1}'.format(cnn_or_lstm,test_name)
+        if freq is None:
+            reading_path = 'cache/{0}/{1}'.format(cnn_or_lstm,test_name)
+        else:
+            reading_path = 'cache/{0}/{1}'.format(cnn_or_lstm,test_name+'_'+str(freq))
     else:
-        reading_path = 'cache/{0}/timestep={1}/{2}'.format(cnn_or_lstm,time_step,test_name)
+        if freq is None:
+            reading_path = 'cache/{0}/timestep={1}/{2}'.format(cnn_or_lstm,time_step,test_name)
+        else:
+            reading_path = 'cache/{0}/timestep={1}/{2}'.format(cnn_or_lstm,time_step,test_name+'_'+str(freq))
     # モデルの構成を読込み、jsonからモデルオブジェクトへ変換
     model = model_from_json(open(os.path.join(reading_path, json_name)).read())
     # モデルオブジェクトへ重みを読み込む
@@ -539,14 +548,15 @@ def run_test_cnn(modelStr,epoch,test_name):
 def run_train_lstm(modelStr,epoch,test_name):
     model = make_model_lstm2()
 
+    print("# model build...  #")
+
     X_train_paths, Y_train = MyDatasetLoader.read_train_data_lstm(test_name, time_step)
 
+    print("# dataset load... #")
 
-    if not os.path.exists('cache/lstm/timestep={0}'.format(time_step)):
-        os.mkdir('cache/lstm/timestep={0}'.format(time_step))
 
     if not os.path.exists('cache/lstm/timestep={0}/{1}'.format(time_step,test_name)):
-        os.mkdir('cache/lstm/timestep={0}/{1}'.format(time_step,test_name))
+        os.makedirs('cache/lstm/timestep={0}/{1}'.format(time_step,test_name))
 
     cp = ModelCheckpoint('cache/lstm/timestep=%s/%s/model_weights_%s_{epoch:02d}.h5'%(time_step,test_name, modelStr), monitor='val_loss', save_best_only=False)
 
@@ -577,6 +587,7 @@ def run_train_lstm(modelStr,epoch,test_name):
     X_val = [np.array(X_l_val,dtype=np.float32), np.array(X_r_val,dtype=np.float32)]
     Y_val = np.array(Y_val,dtype=np.uint8)
 
+    f = open('cache/lstm/timestep={0}/{1}/log.txt'.format(time_step,test_name), 'w')
 
     #val_accの記録
     val_acc_hist = []
@@ -587,6 +598,7 @@ def run_train_lstm(modelStr,epoch,test_name):
         #trainの順番をシャッフル
         random.shuffle(train_nums)
 
+        pre_time = time.time()
         #バッチの数だけループ
         for i in range(len(train_nums)): 
 
@@ -610,13 +622,17 @@ def run_train_lstm(modelStr,epoch,test_name):
                                                  Y_train_batch)#, class_weight=class_weight)
 
             #1000batchごとにvalidateしてみる
-            if i % 1000 == 0:
+            if i % 1000 == 1:
                 val_loss, val_acc = model.evaluate(X_val,
                                                Y_val, 
                                                batch_size = BATCH,
                                                verbose=0)
                 sys.stdout.write('\r{0}/{1}  loss = {2:05f} acc = {3:05f} weight = {4:05f}:{5:06f} val_loss = {6:05f} val_acc = {7:05f}'.format(i * BATCH,len(train_nums) * BATCH,loss,acc,normalized_weight_0,normalized_weight_1,val_loss,val_acc))
                 sys.stdout.flush()
+
+                cur_time = time.time()
+                f.write('{0}/{1}  loss = {2:05f} acc = {3:05f} weight = {4:05f}:{5:06f} val_loss = {6:05f} val_acc = {7:05f}, time = {8}s/1000iteration\n'.format(i * BATCH,len(train_nums) * BATCH,loss,acc,normalized_weight_0,normalized_weight_1,val_loss,val_acc,cur_time-pre_time))
+                pre_time = cur_time
 
             else:
                 sys.stdout.write('\r{0}/{1}  loss = {2:05f} acc = {3:05f} weight = {4:05f}:{5:06f}'.format(i * BATCH,len(train_nums) * BATCH,loss,acc,normalized_weight_0,normalized_weight_1))
@@ -651,6 +667,132 @@ def run_train_lstm(modelStr,epoch,test_name):
         os.makedirs('result/lstm/timestep={0}/{1}'.format(time_step,test_name))
     plt.savefig('result/lstm/timestep={0}/{1}/trainplt.png'.format(time_step,test_name))
 
+    f.close()
+
+################## L S T M  T R A I N  FREQ ##################################################################
+def run_train_lstm_freq(modelStr,epoch,test_name, freq):
+    model = make_model_lstm2()
+
+    print("# model build...  #")
+
+    X_train_paths, Y_train = MyDatasetLoader.read_train_data_lstm(test_name, time_step)
+
+    print("# dataset load... #")
+
+
+    if not os.path.exists('cache/lstm/timestep={0}/{1}_{2}'.format(time_step,test_name, freq)):
+        os.makedirs('cache/lstm/timestep={0}/{1}_{2}'.format(time_step,test_name, freq))
+
+    cp = ModelCheckpoint('cache/lstm/timestep=%s/%s/model_weights_%s_{epoch:02d}.h5'%(time_step,test_name+'_'+str(freq), modelStr), monitor='val_loss', save_best_only=False)
+
+
+    print('start train (test_name : {0}_{1})'.format(test_name, freq))
+ 
+    #バッチの順番をシャッフル
+    batch_nums = []
+    for i in range(len(X_train_paths[0])//BATCH):
+        batch_nums.append(i)
+    random.shuffle(batch_nums)
+
+    #validationとtrainにわける 99:1
+    train_nums = batch_nums[: len(batch_nums) * 4 // 5]
+    validation_nums = batch_nums[len(batch_nums) * 4 // 5:]
+
+
+    #validation_data
+    X_l_val, X_r_val, Y_val = [],[],[]
+    for j in range(len(validation_nums)):
+        X_val_batch, Y_val_batch = MyDatasetLoader.train_batch_create(X_train_paths, Y_train, validation_nums[j],BATCH)
+        for l in X_val_batch[0]:
+            X_l_val.append(l)
+        for r in X_val_batch[1]:
+            X_r_val.append(r)
+        for y in Y_val_batch:
+            Y_val.append(y)             
+    X_val = [np.array(X_l_val,dtype=np.float32), np.array(X_r_val,dtype=np.float32)]
+    Y_val = np.array(Y_val,dtype=np.uint8)
+
+    f = open('cache/lstm/timestep={0}/{1}_{2}/log.txt'.format(time_step,test_name, freq), 'w')
+
+    #val_accの記録
+    val_acc_hist = []
+     
+    #学習ループ
+    for ep in range(epoch):
+        print('Epoch {0}/{1}\r'.format(ep + 1, epoch))
+        #trainの順番をシャッフル
+        random.shuffle(train_nums)
+
+        pre_time = time.time()
+        #バッチの数だけループ
+        for i in range(len(train_nums)): 
+
+            #train
+            X_train_batch, Y_train_batch = MyDatasetLoader.train_batch_create(X_train_paths, Y_train, train_nums[i],BATCH)
+
+            #class_weightを計算
+            weight_0, weight_1 = 0, 0
+            for y in Y_train_batch:
+                if y[0] == 0:
+                    weight_0 += 1
+                if y[0] == 1:
+                    weight_1 += 1  
+            normalized_weight_0 = weight_0 / (weight_0 + weight_1)
+            normalized_weight_1 = weight_1 / (weight_0 + weight_1)
+            class_weight = {0 : normalized_weight_0, 1 : normalized_weight_1}
+
+            
+      
+            loss, acc = model.train_on_batch(X_train_batch,
+                                                 Y_train_batch)#, class_weight=class_weight)
+
+            #1000batchごとにvalidateしてみる
+            if i % 1000 == 1:
+                val_loss, val_acc = model.evaluate(X_val,
+                                               Y_val, 
+                                               batch_size = BATCH,
+                                               verbose=0)
+                sys.stdout.write('\r{0}/{1}  loss = {2:05f} acc = {3:05f} weight = {4:05f}:{5:06f} val_loss = {6:05f} val_acc = {7:05f}'.format(i * BATCH,len(train_nums) * BATCH,loss,acc,normalized_weight_0,normalized_weight_1,val_loss,val_acc))
+                sys.stdout.flush()
+
+                cur_time = time.time()
+                f.write('{0}/{1}  loss = {2:05f} acc = {3:05f} weight = {4:05f}:{5:06f} val_loss = {6:05f} val_acc = {7:05f}, time = {8}s/1000iteration\n'.format(i * BATCH,len(train_nums) * BATCH,loss,acc,normalized_weight_0,normalized_weight_1,val_loss,val_acc,cur_time-pre_time))
+                pre_time = cur_time
+
+            else:
+                sys.stdout.write('\r{0}/{1}  loss = {2:05f} acc = {3:05f} weight = {4:05f}:{5:06f}'.format(i * BATCH,len(train_nums) * BATCH,loss,acc,normalized_weight_0,normalized_weight_1))
+                sys.stdout.flush()
+
+            #epochの最後のval_accを記録
+            if i == len(train_nums) - 1:
+                val_loss, val_acc = model.evaluate(X_val,
+                                               Y_val, 
+                                               batch_size = BATCH,
+                                               verbose=0)
+                val_acc_hist.append(val_acc)
+                sys.stdout.write('\r{0}/{1}  loss = {2:05f} acc = {3:05f} weight = {4:05f}:{5:06f} val_loss = {6:05f} val_acc = {7:05f}'.format(i * BATCH,len(train_nums) * BATCH,loss,acc,normalized_weight_0,normalized_weight_1,val_loss,val_acc))
+                sys.stdout.flush()
+
+        print('\r')
+        
+        #save_weight
+        model.save_weights('cache/lstm/timestep={0}/{1}_{2}/model_weights_{3}_{4:02d}.h5'.format(time_step,test_name,freq,modelStr,ep))
+
+    # モデルの構成を保存
+    save_model(model, modelStr,'lstm',test_name)
+
+    #学習の様子をグラフで保存
+    plt.clf()
+    plt.plot(range(epoch), val_acc_hist, marker = '.', label='val_acc')
+    plt.legend(loc='best')
+    plt.grid()
+    plt.xlabel('epoch')
+    plt.ylabel('acc')
+    if not os.path.exists('result/lstm/timestep={0}/{1}_{2}'.format(time_step,test_name, freq)):
+        os.makedirs('result/lstm/timestep={0}/{1}_{2}'.format(time_step,test_name, freq))
+    plt.savefig('result/lstm/timestep={0}/{1}_{2}/trainplt.png'.format(time_step,test_name, freq))
+
+    f.close()
 
 
 ################## L S T M  T E S T ##################################################################
@@ -787,6 +929,248 @@ def run_test_lstm(modelStr,epoch,test_name):
     plt.title('ROC curve')
     plt.legend(loc="lower right")
     plt.savefig(os.path.join(result_path,'ROC.png'))
+
+
+################## L S T M  T E S T Freq##################################################################
+def run_test_lstm_freq(modelStr,epoch,test_name, freq):
+    results = []
+
+    X_test_paths, Y_test, img_paths = MyDatasetLoader.read_test_data_lstm(test_name, time_step)
+
+    #端数は切っとく
+    batch_num = len(X_test_paths[0])//BATCH
+    Y_test = Y_test[:batch_num * BATCH]
+
+    model = read_model(modelStr,epoch,'lstm',test_name, freq=freq)
+
+
+    #結果保存用のディレクトリ
+    result_path = 'result/lstm/timestep=%d/%s/ep%d'%(time_step,test_name+'_'+str(freq),epoch)
+    if not os.path.exists(result_path):
+        os.makedirs(result_path)
+
+   
+    print('start test (test_name : {0})'.format(test_name+'_'+str(freq)))
+
+    test_result = []
+    #バッチの数だけループ
+    for i in range(len(X_test_paths[0])//BATCH): 
+
+        #test
+        X_test_batch = MyDatasetLoader.test_batch_create(X_test_paths, i, BATCH)
+        
+    
+        result = model.predict_on_batch(X_test_batch)
+        for r in result:
+           test_result.append(r)
+
+
+        sys.stdout.write('\r{0}/{1}'.format(i* BATCH,(len(X_test_paths[0])//BATCH)*BATCH))
+        sys.stdout.flush()
+
+    test_result_classes = []
+    test_result = np.array(test_result,dtype=np.float32)
+    test_result_classes = list(map(lambda x:1 if x > float(threshold) else 0,test_result[:,1])) 
+    print(test_result_classes)
+
+
+    #誤識別した画像を保存
+    count = 0
+    miss_count = 0
+    if not os.path.exists(os.path.join(result_path,'img')):
+        os.makedirs(os.path.join(result_path,'img'))
+
+    for root, dirs, files in os.walk(os.path.join(result_path,'img/FP'), topdown=False):
+         for name in files:
+                os.remove(os.path.join(result_path,'img/FP', name))
+    for root, dirs, files in os.walk(os.path.join(result_path,'img/FN'), topdown=False):
+         for name in files:
+                os.remove(os.path.join(result_path,'img/FN', name))
+
+    for res in test_result_classes:
+        if res != Y_test[count][1]:
+            miss_count += 1
+            image = cv2.imread(img_paths[count])
+            if int(Y_test[count][1]) == 0:
+                dir_path = os.path.join(result_path,'img/FP')
+            else:
+                dir_path = os.path.join(result_path,'img/FN')
+            if not os.path.isdir(dir_path):
+                os.makedirs(dir_path)
+                    
+            head,tail = os.path.split(img_paths[count]) #tailは'0001.png'
+            new_path = os.path.join(dir_path, tail)
+            cv2.imwrite(new_path, image) 
+        count += 1
+
+
+    #ミスの数を表示
+    print('miss_amount:{0}'.format(str(miss_count)))
+
+    #F値などをtextで保存
+    tp,tn,fp,fn = 0,0,0,0
+    count = 0
+    for res in test_result_classes:
+        if res == Y_test[count][1]:
+            if res == 0:
+                tn += 1
+            else:
+                tp += 1
+        else:
+            if res == 0:
+                fn += 1
+            else:
+                fp += 1
+        count += 1
+
+    if tp + fp != 0:
+        accuracy = (tp + tn) / (tp + fn + fp + tn)
+        precision = tp / (tp + fp)
+        if tp + fn == 0:
+            recall = 0
+        else:
+            recall = tp / (tp + fn)
+        if recall + precision == 0:
+            f_value = 0
+        else:  
+            f_value = (2 * recall * precision) / (recall + precision)
+
+    f = open(os.path.join(result_path,'result.txt'.format(test_name)), 'w')
+    f.write('\nTHRESHOLD : 0.5')
+    f.write('\nTrue Negative  = {0:5d}  | False Negative = {1:5d}'.format(tn, fn)) 
+    f.write('\nFalse Positive = {0:5d}  | True Positive  = {1:5d}\n'.format(fp, tp)) 
+    f.write('\nAccuracy  = %01.4f' % accuracy)
+    f.write('\nPrecision = %01.4f' % precision)
+    f.write('\nRecall    = %01.4f' % recall)
+    f.write('\nF_value   = %01.4f\n' % f_value)
+
+
+    #csvファイルに結果を保存
+    np.savetxt(os.path.join(result_path,'result.csv'),test_result,delimiter=',')
+    np.savetxt(os.path.join(result_path,'seikai.csv'),Y_test,delimiter=',')
+
+
+    #ROCカーブを計算、画像で保存
+    fpr, tpr, thresholds = roc_curve(Y_test[:,1], test_result[:,1])
+    roc_auc = auc(fpr, tpr)       
+
+    plt.clf()
+    plt.figure(figsize=[10,10])
+    plt.plot(fpr, tpr, label='ROC curve (area = %0.2f)' % roc_auc)
+    plt.plot([0, 1], [0, 1], 'k--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.0])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC curve')
+    plt.legend(loc="lower right")
+    plt.savefig(os.path.join(result_path,'ROC.png'))
+
+################## L S T M1  T R A I N ##################################################################
+def run_train_lstm1(modelStr,epoch,test_name):
+    model = make_model_lstm1()
+
+    X_train_paths, Y_train = MyDatasetLoader.read_train_data_lstm(test_name, time_step)
+
+
+
+    if not os.path.exists('cache/lstm1/timestep={0}'.format(time_step)):
+        os.mkdir('cache/lstm1/timestep={0}'.format(time_step))
+
+    if not os.path.exists('cache/lstm1/timestep={0}/{1}'.format(time_step,test_name)):
+        os.mkdir('cache/lstm1/timestep={0}/{1}'.format(time_step,test_name))
+
+    cp = ModelCheckpoint('cache/lstm1/timestep=%s/%s/model_weights_%s_{epoch:02d}.h5'%(time_step,test_name, modelStr), monitor='val_loss', save_best_only=False)
+
+
+    print('start train (test_name : {0})'.format(test_name))
+
+    #バッチの順番をシャッフル
+    batch_nums = []
+    for i in range(len(X_train_paths[0])//BATCH):
+        batch_nums.append(i)
+    random.shuffle(batch_nums)
+
+    #validationとtrainにわける 99:1
+    train_nums = batch_nums[: len(batch_nums) * 19 // 20]
+    validation_nums = batch_nums[len(batch_nums) * 19 // 20:]
+
+
+    #validation_data
+    X_l_val, X_r_val, Y_val = [],[],[]
+    for j in range(len(validation_nums)):
+        X_val_batch, Y_val_batch = MyDatasetLoader.train_batch_create(X_train_paths, Y_train, validation_nums[j],BATCH)
+        for l in X_val_batch[0]:
+            X_l_val.append(l)
+        for r in X_val_batch[1]:
+            X_r_val.append(r)
+        for y in Y_val_batch:
+            Y_val.append(y)             
+    X_val = [np.array(X_l_val,dtype=np.float32), np.array(X_r_val,dtype=np.float32)]
+    Y_val = np.array(Y_val,dtype=np.uint8)
+
+
+    #val_accの記録
+    val_acc_hist = []
+     
+    #学習ループ
+    for ep in range(epoch):
+        print('Epoch {0}/{1}\r'.format(ep + 1, epoch))
+        #trainの順番をシャッフル
+        random.shuffle(train_nums)
+
+        #バッチの数だけループ
+        for i in range(len(train_nums)): 
+
+            #train
+            X_train_batch, Y_train_batch = MyDatasetLoader.train_batch_create(X_train_paths, Y_train, train_nums[i],BATCH)
+      
+            loss, acc = model.train_on_batch(X_train_batch,
+                                                 Y_train_batch)
+
+            #100batchごとにvalidateしてみる
+            if i % 100 == 0:
+                val_loss, val_acc = model.evaluate(X_val,
+                                               Y_val, 
+                                               batch_size = BATCH,
+                                               verbose=0)
+                sys.stdout.write('\r{0}/{1}  loss = {2:05f} acc = {3:05f} val_loss = {4:05f} val_acc = {5:05f}'.format(i * BATCH,len(train_nums) * BATCH,loss,acc,val_loss,val_acc))
+                sys.stdout.flush()
+
+            else:
+                sys.stdout.write('\r{0}/{1}  loss = {2:05f} acc = {3:05f}'.format(i * BATCH,len(train_nums) * BATCH,loss,acc))
+                sys.stdout.flush()
+
+            #epochの最後のval_accを記録
+            if i == len(train_nums) - 1:
+                val_loss, val_acc = model.evaluate(X_val,
+                                               Y_val, 
+                                               batch_size = BATCH,
+                                               verbose=0)
+                val_acc_hist.append(val_acc)
+                sys.stdout.write('\r{0}/{1}  loss = {2:05f} acc = {3:05f} val_loss = {4:05f} val_acc = {5:05f}'.format(i * BATCH,len(train_nums) * BATCH,loss,acc,val_loss,val_acc))
+                sys.stdout.flush()
+
+
+        print('\r')
+        
+        #save_weight
+        model.save_weights('cache/lstm1/timestep={0}/{1}/model_weights_{2}_{3:02d}.h5'.format(time_step,test_name,modelStr,ep))
+
+    # モデルの構成を保存
+    save_model(model, modelStr,'lstm1',test_name)
+
+    #学習の様子をグラフで保存
+    plt.clf()
+    plt.plot(range(epoch), val_acc_hist, marker = '.', label='val_acc')
+    plt.legend(loc='best')
+    plt.grid()
+    plt.xlabel('epoch')
+    plt.ylabel('acc')
+    if not os.path.exists('result/lstm1/timestep={0}/{1}'.format(time_step,test_name)):
+        os.makedirs('result/lstm1/timestep={0}/{1}'.format(time_step,test_name))
+    plt.savefig('result/lstm1/timestep={0}/{1}/trainplt.png'.format(time_step,test_name))
+
 
 ################## L S T M1  T R A I N ##################################################################
 def run_train_lstm1(modelStr,epoch,test_name):
@@ -1320,7 +1704,7 @@ def run_train_lstm_face(modelStr,epoch,test_name):
         X_val = [np.array(X_l_val,dtype=np.float32), np.array(X_r_val,dtype=np.float32), np.array(X_f_val,dtype=np.float32)]
         Y_val = np.array(Y_val,dtype=np.uint8)
 
-
+        pre_time = time.time()
 
         #バッチの数だけループ
         for i in range(len(train_nums)): 
@@ -1332,13 +1716,18 @@ def run_train_lstm_face(modelStr,epoch,test_name):
                                                  Y_train_batch)
 
             #validate
-            if i == 0 or i == len(train_nums) - 1:
+            if i % 1000 == 1 or i == len(train_nums) - 1:
                 val_loss, val_acc = model.evaluate(X_val,
                                                Y_val, 
                                                batch_size = BATCH,
                                                verbose=0)
                 sys.stdout.write('\r{0}/{1}  loss = {2:05f} acc = {3:05f} val_loss = {4:05f} val_acc = {5:05f}'.format(i * BATCH,len(train_nums) * BATCH,loss,acc,val_loss,val_acc))
                 sys.stdout.flush()
+
+                cur_time = time.time()
+                f.write('{0}/{1}  loss = {2:05f} acc = {3:05f} weight = {4:05f}:{5:06f} val_loss = {6:05f} val_acc = {7:05f}, time = {8}s/1000iteration\n'.format(i * BATCH,len(train_nums) * BATCH,loss,acc,normalized_weight_0,normalized_weight_1,val_loss,val_acc,cur_time-pre_time))
+                pre_time = cur_time
+
             else:
                 sys.stdout.write('\r{0}/{1}  loss = {2:05f} acc = {3:05f}'.format(i * BATCH,len(train_nums) * BATCH,loss,acc))
                 sys.stdout.flush()
@@ -1674,18 +2063,18 @@ if __name__ == '__main__':
                   'Aziz', 
                   'Derek',
                   'Elle',
-                  'Emma']
-                  #'Hiyane',
-                  #'Imaizumi',
-                  #'James',
-                  #'Kendall',
-                  #'Kitazumi',
-                  #'Liza',
-                  #'Neil',
-                  #'Ogawa',
-                  #'Selena',
-                  #'Shiraishi',
-                  #'Taylor']
+                  'Emma',
+                  'Hiyane',
+                  'Imaizumi',
+                  'James',
+                  'Kendall',
+                  'Kitazumi',
+                  'Liza',
+                  'Neil',
+                  'Ogawa',
+                  'Selena',
+                  'Shiraishi',
+                  'Taylor']
 
     #第3引数にtest_nameを指定した場合それに従って実行,指定なしの場合all
     if run_type == 'train_cnn':
@@ -1715,6 +2104,19 @@ if __name__ == '__main__':
             for test_name in test_names:
                 run_train_lstm(model,epoch,test_name)
 
+    elif run_type == 'train_lstm_freq':
+        epoch = int(sys.argv[2])
+        if len(sys.argv) == 5:
+            test_name = sys.argv[3]
+            freq = int(sys.argv[4])
+            for i in range(freq):
+                run_train_lstm_freq(model, epoch, test_name, i)
+        else:
+            freq = int(sys.argv[3])
+            for test_name in test_names:
+                for i in range(freq):
+                    run_train_lstm_freq(model, epoch, test_name, i)
+
     elif run_type == 'test_lstm':
         epoch = int(sys.argv[2])
         if len(sys.argv) == 4:   
@@ -1723,6 +2125,16 @@ if __name__ == '__main__':
         else:
             for test_name in test_names:
                 run_test_lstm(model,epoch,test_name) 
+
+    elif run_type == 'test_lstm_freq':
+        epoch = int(sys.argv[2])
+        if len(sys.argv) == 4:   
+            test_name = sys.argv[3]
+            freq = int(sys.args[4])
+            run_test_lstm_freq(model,epoch,test_name, freq)     
+        else:
+            for test_name in test_names:
+                run_test_lstm_freq(model,epoch,test_name, freq) 
 
     elif run_type == 'train_lstm1':
         epoch = int(sys.argv[2])
